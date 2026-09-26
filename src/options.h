@@ -15,6 +15,7 @@ struct Options {
     std::string log;
     int probe = 0;
     std::map<int, std::string> afterLoad;
+    std::string startSession;
 };
 
 extern const char* const usage;

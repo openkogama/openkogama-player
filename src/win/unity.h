@@ -10,12 +10,15 @@ struct GameState {
     std::string level;
     std::optional<int> joinState;
     std::optional<int> connectionState;
+    std::optional<int> serverTime;
 };
 
 class UnityBridge {
 public:
     std::optional<GameState> read();
     bool callGame(const std::string& method);
+    bool waitingForSession();
+    bool startSession(const std::string& json);
 
 private:
     bool attach();

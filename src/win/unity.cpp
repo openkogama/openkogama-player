@@ -3,6 +3,8 @@
 
 #include <windows.h>
 
+#include <regex>
+
 namespace {
 
 using DomainGetById = void* (*)(int);
@@ -18,6 +20,13 @@ using ClassGetMethodFromName = void* (*)(void*, const char*, int);
 using RuntimeInvoke = void* (*)(void*, void*, void**, void**);
 using ObjectUnbox = void* (*)(void*);
 using StringToUtf8 = char* (*)(void*);
+using StringNew = void* (*)(void*, const char*);
+using ValueBox = void* (*)(void*, void*, void*);
+using GetClass = void* (*)();
+using ObjectGetClass = void* (*)(void*);
+using ClassGetFieldFromName = void* (*)(void*, const char*);
+using FieldGetValue = void (*)(void*, void*, void*);
+using ObjectNew = void* (*)(void*, void*);
 
 struct Api {
     DomainGetById domainGetById;
@@ -33,6 +42,14 @@ struct Api {
     RuntimeInvoke runtimeInvoke;
     ObjectUnbox objectUnbox;
     StringToUtf8 stringToUtf8;
+    StringNew stringNew;
+    ValueBox valueBox;
+    GetClass int32Class;
+    GetClass booleanClass;
+    ObjectGetClass objectGetClass;
+    ClassGetFieldFromName classGetFieldFromName;
+    FieldGetValue fieldGetValue;
+    ObjectNew objectNew;
 };
 
 Api api {};
@@ -60,7 +77,15 @@ bool loadApi()
         && bind(module, "mono_class_get_method_from_name", api.classGetMethodFromName)
         && bind(module, "mono_runtime_invoke", api.runtimeInvoke)
         && bind(module, "mono_object_unbox", api.objectUnbox)
-        && bind(module, "mono_string_to_utf8", api.stringToUtf8);
+        && bind(module, "mono_string_to_utf8", api.stringToUtf8)
+        && bind(module, "mono_string_new", api.stringNew)
+        && bind(module, "mono_value_box", api.valueBox)
+        && bind(module, "mono_get_int32_class", api.int32Class)
+        && bind(module, "mono_get_boolean_class", api.booleanClass)
+        && bind(module, "mono_object_get_class", api.objectGetClass)
+        && bind(module, "mono_class_get_field_from_name", api.classGetFieldFromName)
+        && bind(module, "mono_field_get_value", api.fieldGetValue)
+        && bind(module, "mono_object_new", api.objectNew);
 }
 
 struct Images {
@@ -160,6 +185,7 @@ std::optional<GameState> UnityBridge::read()
     if (void* network = game()) {
         state.joinState = integer(property(gameImage, "", "MVNetworkGame", "JoinState", network));
         state.connectionState = integer(property(gameImage, "", "MVNetworkGame", "ConnState", network));
+        state.serverTime = integer(property(gameImage, "", "MVNetworkGame", "ServerTimeInMilliSeconds", network));
     }
     return state;
 }
@@ -182,6 +208,77 @@ bool UnityBridge::callGame(const std::string& method)
     if (exception)
         trace("unity: MVNetworkGame.{} threw", method);
     return !exception;
+}
+
+bool UnityBridge::waitingForSession()
+{
+    if (!attach())
+        return false;
+    void* controller = property(gameImage, "", "MVGameController", "Instance", nullptr);
+    return controller && !property(gameImage, "", "MVGameController", "Game", controller);
+}
+
+bool UnityBridge::startSession(const std::string& json)
+{
+    if (!attach())
+        return false;
+
+    void* controllerClass = api.classFromName(gameImage, "", "MVGameController");
+    void* controller = property(gameImage, "", "MVGameController", "Instance", nullptr);
+    void* loginField = controllerClass ? api.classGetFieldFromName(controllerClass, "LoginForm") : nullptr;
+    void* login = nullptr;
+    if (controller && loginField)
+        api.fieldGetValue(controller, loginField, &login);
+    void* dataField = login ? api.classGetFieldFromName(api.objectGetClass(login), "gameSessionData") : nullptr;
+    void* data = nullptr;
+    if (dataField)
+        api.fieldGetValue(login, dataField, &data);
+    void* setItem = data ? api.classGetMethodFromName(api.objectGetClass(data), "set_Item", 2) : nullptr;
+    void* sessionClass = api.classFromName(gameImage, "", "GameSessionData");
+    void* sessionCtor = sessionClass ? api.classGetMethodFromName(sessionClass, ".ctor", 1) : nullptr;
+    void* startGame = controllerClass ? api.classGetMethodFromName(controllerClass, "StartGame", 1) : nullptr;
+    if (!setItem || !sessionCtor || !startGame) {
+        trace("unity: the login form session cannot be filled in this build");
+        return false;
+    }
+
+    static const std::regex field(R"re("(\w+)"\s*:\s*("((?:[^"\\]|\\.)*)"|-?\d+|true|false))re");
+    static const std::regex escape(R"(\\(.))");
+    for (auto it = std::sregex_iterator(json.begin(), json.end(), field); it != std::sregex_iterator(); ++it) {
+        const std::smatch& match = *it;
+        std::string raw = match[2].str();
+        void* value = nullptr;
+        if (raw.starts_with("\"")) {
+            std::string text = std::regex_replace(match[3].str(), escape, "$1");
+            value = api.stringNew(domain, text.c_str());
+        } else if (raw == "true" || raw == "false") {
+            bool flag = raw == "true";
+            value = api.valueBox(domain, api.booleanClass(), &flag);
+        } else {
+            int number = std::stoi(raw);
+            value = api.valueBox(domain, api.int32Class(), &number);
+        }
+        void* args[] = { api.stringNew(domain, match[1].str().c_str()), value };
+        void* exception = nullptr;
+        api.runtimeInvoke(setItem, data, args, &exception);
+    }
+
+    void* session = api.objectNew(domain, sessionClass);
+    void* exception = nullptr;
+    void* ctorArgs[] = { data };
+    api.runtimeInvoke(sessionCtor, session, ctorArgs, &exception);
+    if (exception) {
+        trace("unity: GameSessionData rejected the session");
+        return false;
+    }
+    void* startArgs[] = { session };
+    api.runtimeInvoke(startGame, controller, startArgs, &exception);
+    if (exception) {
+        trace("unity: MVGameController.StartGame threw");
+        return false;
+    }
+    trace("unity: started the session the login form was waiting for");
+    return true;
 }
 
 void LevelLoadWatcher::tick(UnityBridge& unity)

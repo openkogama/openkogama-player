@@ -19,6 +19,7 @@ namespace {
 Host* current = nullptr;
 HWND pluginWindow = nullptr;
 bool closing = false;
+bool exiting = false;
 
 LRESULT CALLBACK frameProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
@@ -31,6 +32,15 @@ LRESULT CALLBACK frameProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam
         }
         return 0;
     case WM_CLOSE:
+        if (!exiting && current && current->requestExit()) {
+            exiting = true;
+            ShowWindow(hwnd, SW_HIDE);
+            platform::startTimer(700, false, [](uint32_t) {
+                closing = true;
+                PostQuitMessage(0);
+            });
+            return 0;
+        }
         closing = true;
         PostQuitMessage(0);
         return 0;
@@ -145,11 +155,31 @@ int main()
     LevelLoadWatcher watcher(options.afterLoad);
     if (!options.afterLoad.empty())
         platform::startTimer(10, true, [&](uint32_t) { watcher.tick(unity); });
+    unsigned long loginSince = 0;
+    bool sessionStarted = false;
+    if (!options.startSession.empty()) {
+        platform::startTimer(250, true, [&](uint32_t) {
+            if (sessionStarted || host.wasCalled(options.startSession))
+                return;
+            if (!unity.waitingForSession()) {
+                loginSince = 0;
+                return;
+            }
+            unsigned long now = GetTickCount();
+            if (!loginSince)
+                loginSince = now;
+            if (now - loginSince < 3000)
+                return;
+            sessionStarted = true;
+            trace("the game never asked for {}, starting the session from the host", options.startSession);
+            host.fetchReply(options.startSession, [&](std::string json) { unity.startSession(json); });
+        });
+    }
     if (options.probe > 0) {
         platform::startTimer(options.probe * 1000, true, [&](uint32_t) {
             if (std::optional<GameState> state = unity.read())
-                trace("probe: frame {} loading {} level {} JoinState {} ConnState {}", state->frame, state->loadingLevel, state->level,
-                    state->joinState.value_or(-1), state->connectionState.value_or(-1));
+                trace("probe: frame {} loading {} level {} JoinState {} ConnState {} serverTime {}", state->frame, state->loadingLevel, state->level,
+                    state->joinState.value_or(-1), state->connectionState.value_or(-1), state->serverTime.value_or(-1));
         });
     }
 

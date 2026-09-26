@@ -6,3 +6,5 @@ get_browser_version=GiveBrowserInfo:Firefox,52
 0=OnJoinedLevelLoaded
 --exit-message
 Exit
+--start-session
+sendPlayerParams

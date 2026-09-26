@@ -4,9 +4,11 @@
 #include "platform.h"
 #include "script.h"
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,6 +20,8 @@ struct HostOptions {
     std::map<std::string, std::string> replies;
     std::map<std::string, std::pair<std::string, std::string>> sends;
     std::string bridge = "BrowserComm";
+    std::string exitMessage;
+    std::string localSource;
     std::string userAgent = "Mozilla/5.0 (Windows NT 6.1; rv:52.0) Gecko/20100101 Firefox/52.0";
 };
 
@@ -35,6 +39,9 @@ public:
     bool evaluate(NPObject* scope, const std::string& script, NPVariant* result);
     void cancel(NPStream* stream, NPReason reason);
     const char* userAgent() const;
+    bool requestExit();
+    bool wasCalled(const std::string& name) const;
+    void fetchReply(const std::string& name, std::function<void(std::string)> done);
 
 private:
     struct Stream;
@@ -62,4 +69,5 @@ private:
     ObjectRef element;
     std::vector<std::shared_ptr<Stream>> streams;
     bool running = false;
+    std::set<std::string> called;
 };

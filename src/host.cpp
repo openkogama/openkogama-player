@@ -474,6 +474,39 @@ void Host::stop(NP_ShutdownFunc shutdown)
         shutdown();
 }
 
+bool Host::requestExit()
+{
+    if (!running || options.exitMessage.empty())
+        return false;
+    sendMessage(options.bridge, options.exitMessage, "");
+    return true;
+}
+
+bool Host::wasCalled(const std::string& name) const
+{
+    return called.contains(name);
+}
+
+void Host::fetchReply(const std::string& name, std::function<void(std::string)> done)
+{
+    auto reply = lookup(options.replies, name);
+    if (reply == options.replies.end())
+        return;
+
+    const std::string& data = reply->second;
+    if (!data.starts_with("http://") && !data.starts_with("https://")) {
+        platform::post([done, data] { done(data); });
+        return;
+    }
+    platform::download(data, std::nullopt, [done, data](platform::Response response) {
+        if (!response.ok) {
+            trace("could not fetch {}", data);
+            return;
+        }
+        done(std::string(response.body.begin(), response.body.end()));
+    });
+}
+
 const char* Host::userAgent() const
 {
     return options.userAgent.c_str();
@@ -541,6 +574,7 @@ bool Host::pageCall(const std::string& name, const std::vector<Value>& args, Val
         described += (described.empty() ? "" : ", ") + arg.describe();
     trace("page call {}({})", name, described);
     result = Value();
+    called.insert(name.starts_with("UNITY_") ? name.substr(6) : name);
 
     bool handled = false;
     if (auto reply = lookup(options.replies, name); reply != options.replies.end()) {
@@ -697,10 +731,12 @@ void Host::open(const std::string& target, std::optional<std::string> post, bool
     stream->notifyData = notifyData;
     trace("load {}", shorten(stream->url));
 
-    if (isFileUrl(stream->url)) {
-        platform::post([this, stream] {
+    bool mounted = !options.localSource.empty() && stripQuery(stream->url) == stripQuery(options.source);
+    if (mounted || isFileUrl(stream->url)) {
+        std::string local = mounted ? options.localSource : stream->url;
+        platform::post([this, stream, local] {
             platform::Response response;
-            response.file = fileUrlToPath(stream->url);
+            response.file = fileUrlToPath(local);
             std::ifstream in(pathFromUtf8(response.file), std::ios::binary);
             if (in) {
                 response.body.assign(std::istreambuf_iterator<char>(in), {});
