@@ -1,0 +1,6 @@
+--object
+BrowserComm
+--send
+get_browser_version=GiveBrowserInfo:Firefox,52
+--after-load
+0=OnJoinedLevelLoaded
