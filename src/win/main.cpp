@@ -185,6 +185,10 @@ int main()
 
     MSG message;
     while (!closing && GetMessageW(&message, nullptr, 0, 0) > 0) {
+        if (message.message == WM_SYSKEYDOWN && message.wParam == VK_F4 && (HIWORD(message.lParam) & KF_ALTDOWN)) {
+            PostMessageW(frame, WM_CLOSE, 0, 0);
+            continue;
+        }
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
